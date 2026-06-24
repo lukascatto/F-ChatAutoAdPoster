@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>F-Chat Auto-Advertiser</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <h1 class="app-title">F-Chat Auto-Advertiser</h1>
+            <span class="status-indicator" id="status-badge">Inactive</span>
+        </header>
+
+        <!-- Channels Section -->
+        <section class="section channels-section">
+            <div class="section-header">
+                <h2>Target Channels</h2>
+                <button id="btn-refresh" class="btn btn-icon" title="Refresh Joined Channels">
+                    <svg viewBox="0 0 24 24" class="icon-refresh">
+                        <path
+                            d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Bulk Selection buttons -->
+            <div id="bulk-select-container" class="bulk-select-bar">
+                <button id="btn-select-all" class="btn btn-secondary">Select All</button>
+                <button id="btn-deselect-all" class="btn btn-secondary">Deselect All</button>
+            </div>
+
+            <div class="channel-list-container">
+                <div id="channel-list-empty" class="channel-list-info">Loading...</div>
+                <div id="channel-list" class="channel-list">
+                    <!-- Loaded dynamically -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Ad Content Section -->
+        <section class="section content-section">
+            <div class="section-header">
+                <h2>Advertisement Content</h2>
+                <button id="btn-preview-toggle" class="btn btn-secondary">Show Preview</button>
+            </div>
+
+            <div id="editor-container" class="editor-container">
+                <textarea id="ad-content"
+                    placeholder="Type your ad content here... (Supports BBCode like [b], [i], [color=red], [user]Character[/user])"
+                    rows="6"></textarea>
+            </div>
+
+            <div id="preview-container" class="preview-container hidden">
+                <div class="preview-header">BBCode Preview</div>
+                <div id="bbcode-preview" class="bbcode-preview-pane"></div>
+            </div>
+        </section>
+
+        <!-- Timing Settings Section -->
+        <section class="section settings-section">
+            <h2>Timing Configuration</h2>
+            <div class="control-group" style="margin-top: 8px;">
+                <label for="post-delay">
+                    Post Delay (s)
+                    <span class="tooltip">?
+                        <span class="tooltiptext">The pause (in seconds) between posting ads to different channels and
+                            the delay after a channel has finished cooldown (minimum is 1 to avoid spamming
+                            errors)</span>
+                    </span>
+                </label>
+                <input type="number" id="post-delay" min="1" max="3600" step="0.1" value="2">
+            </div>
+        </section>
+
+        <!-- Controls Section -->
+        <footer class="app-footer">
+            <div class="toggle-container">
+                <span class="toggle-label" title="Force single channel selection to run test postings">
+                    Test Mode
+                    <span class="tooltip tooltip-left-aligned">?
+                        <span class="tooltiptext">Forces the channel list to single-selection (radio buttons) to safely
+                            post a single test advertisement to a chosen channel.</span>
+                    </span>
+                </span>
+                <label class="switch">
+                    <input type="checkbox" id="toggle-test-mode">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+            <div class="footer-actions">
+                <button id="btn-test" class="btn btn-primary hidden"
+                    title="Post to the single selected channel immediately to test settings">Test Ad</button>
+                <button id="btn-toggle-active" class="btn btn-primary" title="Start background auto-posting">Start
+                    Autoposting</button>
+            </div>
+        </footer>
+    </div>
+    <script src="popup.js"></script>
+</body>
+
+</html>
