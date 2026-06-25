@@ -17,8 +17,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Listen for responses/updates from the MAIN world (content-main.js) and scheduler iframe
 window.addEventListener('message', (event) => {
-    // 1. Relays to background/popup
+    // 1. Relays to background/popup and handles internal extension actions
     if (event.data && event.data.source === 'fchat-autoposter-main') {
+        const msg = event.data.message;
+        if (msg && msg.action === 'FORCE_DISABLE_AUTOPOST') {
+            try {
+                chrome.storage.local.set({ active: false });
+            } catch (err) {
+                // Context invalidated or storage error
+            }
+            return;
+        }
+        
         try {
             // Verify context is still valid before communicating
             if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {

@@ -14,6 +14,8 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 * **Live BBCode Preview**: Displays formatted BBCode in real time with support for nested `[noparse]`, custom colors, character profiles `[user]`, clickable avatars `[icon]`, and emojis `[eicon]` loaded from official assets.
 * **Test Mode**: Toggles single-channel selection so you can safely send a single test ad to a channel before starting automation.
 * **F-Chat 3.0 Theme & Brand**: Features the official F-Chat desktop client icon and matching dark navy theme variables.
+* **Typing Collision Prevention**: Detects when you are actively typing or have recently sent a message, and automatically pauses ad dispatches to avoid server-level "wait one second" rate-limit error clashing.
+* **Automatic Logout Protection**: Monitors connection status and automatically deactivates auto-posting if you log out or are disconnected for more than 5 seconds.
 
 ---
 

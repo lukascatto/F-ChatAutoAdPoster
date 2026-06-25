@@ -731,5 +731,14 @@ btnPreviewToggle.addEventListener('click', () => {
     }
 });
 
+// Update UI if storage settings are changed externally (e.g. forced disable on disconnect)
+chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'local' && changes.active) {
+        isAutoPostingActive = changes.active.newValue;
+        updateStatusUI(isAutoPostingActive);
+        updateTestModeUI();
+    }
+});
+
 // Run load on popup initialization
 document.addEventListener('DOMContentLoaded', loadSettings);

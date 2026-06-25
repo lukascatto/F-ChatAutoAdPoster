@@ -261,6 +261,62 @@ async function executeTestPost(channelId, text) {
     }
 }
 
+// Rate limiting, user typing detection, and disconnect tracking variables
+let lastTypingTime = 0;
+let lastUserMessageSentTime = 0;
+let disconnectTicks = 0;
+
+function disableAutoPostingOnDisconnect() {
+    isAutoPosting = false;
+    disconnectTicks = 0;
+    sendToIsolated({
+        action: 'FORCE_DISABLE_AUTOPOST'
+    });
+}
+
+// Track active typing in any textbox or textarea in the page
+document.addEventListener('input', (e) => {
+    const target = e.target;
+    if (target && (target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && target.type === 'text'))) {
+        if (target.value && target.value.trim().length > 0) {
+            lastTypingTime = Date.now();
+        }
+    }
+}, true);
+
+// Check if user is currently focused on an input element with text
+function isUserCurrentlyTyping() {
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'TEXTAREA' || (activeEl.tagName === 'INPUT' && activeEl.type === 'text'))) {
+        if (activeEl.value && activeEl.value.trim().length > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Hook F-Chat client's connection.send function to intercept manual messages
+function hookConnection() {
+    try {
+        const core = getFchatCore();
+        if (core && core.connection && !core.connection.__autoposterHooked) {
+            const originalSend = core.connection.send;
+            core.connection.send = function(command, data) {
+                // Intercept MSG (channel messages) and PRI (private messages)
+                if (command === 'MSG' || command === 'PRI') {
+                    lastUserMessageSentTime = Date.now();
+                    console.log(`F-Chat AutoPoster: User sent message (${command}). Delaying ads.`);
+                }
+                return originalSend.apply(this, arguments);
+            };
+            core.connection.__autoposterHooked = true;
+            console.log("F-Chat AutoPoster: Hooked connection.send to track user chat activity.");
+        }
+    } catch (e) {
+        console.error("F-Chat AutoPoster: Error hooking connection.send:", e);
+    }
+}
+
 // Scheduler tick logic (executed every second)
 function handleSchedulerTick() {
     try {
@@ -268,10 +324,24 @@ function handleSchedulerTick() {
             postingQueue = [];
             return;
         }
-        if (!isFchatConnected()) return;
+        
+        // If F-Chat is disconnected for 5 consecutive ticks, disable auto-posting
+        if (!isFchatConnected()) {
+            disconnectTicks++;
+            if (disconnectTicks >= 5) {
+                console.log("F-Chat AutoPoster: F-Chat is disconnected. Disabling auto-post mode.");
+                disableAutoPostingOnDisconnect();
+            }
+            return;
+        } else {
+            disconnectTicks = 0;
+        }
         
         const core = getFchatCore();
         if (!core || !core.conversations) return;
+        
+        // Ensure connection is hooked
+        hookConnection();
         
         const now = Date.now();
         const channels = core.conversations.channelConversations;
@@ -300,6 +370,22 @@ function handleSchedulerTick() {
         if (postingQueue.length > 0 && !isCurrentlySending) {
             // Check if stagger delay (postDelay) has elapsed since the last post
             if (now - lastQueuePostTime >= postDelay) {
+                // Check if user is active/typing or just sent a message
+                const userIsTyping = isUserCurrentlyTyping();
+                const msSinceLastTyping = now - lastTypingTime;
+                const msSinceLastSent = now - lastUserMessageSentTime;
+                
+                // Pause ads if:
+                // 1. User is actively typing (focused on an input with text)
+                // 2. User typed something in the last 4 seconds (handles brief pauses)
+                // 3. User sent a message in the last 1.5 seconds (prevents rate limit clashes)
+                const shouldPauseForUser = userIsTyping || (msSinceLastTyping < 4000) || (msSinceLastSent < 1500);
+                
+                if (shouldPauseForUser) {
+                    // Postpone queue execution during this tick
+                    return;
+                }
+                
                 const nextChannelId = postingQueue.shift();
                 sendAdToChannel(nextChannelId);
             }
