@@ -1,6 +1,64 @@
 // content-main.js
 // Runs in the MAIN world (page context). Has direct access to window.fchatCore and Vue state.
 
+// Global activity and rate-limiting variables
+let lastUserMessageSentTime = 0;
+let lastQueuePostTime = 0;
+let lastTypingTime = 0;
+let disconnectTicks = 0;
+let connectionHooked = false;
+
+// Hook window.WebSocket to intercept user messaging on any live F-Chat client
+(function interceptWebSocket() {
+    try {
+        const OriginalWebSocket = window.WebSocket;
+        if (!OriginalWebSocket || OriginalWebSocket.__autoposterHooked) return;
+
+        const HookedWebSocket = function(url, protocols) {
+            const socket = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
+            
+            const originalSend = socket.send;
+            socket.send = function(data) {
+                if (typeof data === 'string') {
+                    // Extract command word (first 3 chars) for privacy and rate limiting check
+                    const spaceIdx = data.indexOf(' ');
+                    const command = spaceIdx !== -1 ? data.substring(0, spaceIdx) : data;
+                    
+                    if (command === 'MSG' || command === 'PRI') {
+                        lastUserMessageSentTime = Date.now();
+                        
+                        // Check if an ad was sent by the extension very recently
+                        const msSinceLastAd = Date.now() - lastQueuePostTime;
+                        if (msSinceLastAd < 1050) {
+                            const delayMs = 1050 - msSinceLastAd;
+                            console.log(`F-Chat AutoPoster (Socket Intercept): Ad was sent ${msSinceLastAd}ms ago. Delaying user message by ${delayMs}ms to prevent error.`);
+                            setTimeout(() => {
+                                if (socket.readyState === OriginalWebSocket.OPEN) {
+                                    originalSend.call(socket, data);
+                                }
+                            }, delayMs);
+                            return;
+                        }
+                    }
+                }
+                return originalSend.apply(this, arguments);
+            };
+            
+            return socket;
+        };
+
+        // Preserve constants and prototype chain
+        Object.assign(HookedWebSocket, OriginalWebSocket);
+        HookedWebSocket.prototype = OriginalWebSocket.prototype;
+        HookedWebSocket.__autoposterHooked = true;
+        
+        window.WebSocket = HookedWebSocket;
+        console.log("F-Chat AutoPoster: Successfully hooked window.WebSocket for live traffic interception.");
+    } catch (e) {
+        console.error("F-Chat AutoPoster: Failed to hook window.WebSocket:", e);
+    }
+})();
+
 // Helper to find the root Vue instance by scanning DOM elements
 function findVueRoot() {
     // 1. Try default element
@@ -106,7 +164,7 @@ let adText = '';
 let postDelay = 1000; // 1 second stagger between postings
 let lastPostedTime = {}; // channelId -> timestamp
 let postingQueue = [];
-let lastQueuePostTime = 0; // Timestamp of the last post from the queue
+// Timestamp of the last post from the queue
 let isCurrentlySending = false; // Guard to prevent overlapping sends
 
 // Helper to send messages back to the isolated content script
@@ -262,9 +320,6 @@ async function executeTestPost(channelId, text) {
 }
 
 // Rate limiting, user typing detection, and disconnect tracking variables
-let lastTypingTime = 0;
-let lastUserMessageSentTime = 0;
-let disconnectTicks = 0;
 
 function disableAutoPostingOnDisconnect() {
     isAutoPosting = false;
