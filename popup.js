@@ -25,6 +25,50 @@ const btnTest = document.getElementById('btn-test');
 const bulkSelectContainer = document.getElementById('bulk-select-container');
 const btnSelectAll = document.getElementById('btn-select-all');
 const btnDeselectAll = document.getElementById('btn-deselect-all');
+const btnExportLogs = document.getElementById('btn-export-logs');
+
+// Diagnostics Logging System
+let diagLogs = [];
+function logDiag(msg) {
+    const timestamp = new Date().toISOString();
+    const line = `[${timestamp}] ${msg}`;
+    diagLogs.push(line);
+    console.log("F-Chat AutoPoster (Diag): " + msg);
+    if (diagLogs.length > 200) diagLogs.shift();
+}
+
+function exportLogs() {
+    logDiag("Exporting diagnostics log file...");
+    const systemInfo = [
+        "F-Chat Auto-Advertiser Diagnostics Log",
+        "=====================================",
+        `Generated At: ${new Date().toString()}`,
+        `Extension Version: 1.2.0`,
+        `User Agent: ${navigator.userAgent}`,
+        "",
+        "Current Extension State:",
+        "-----------------------",
+        `Auto-Posting Active: ${isAutoPostingActive}`,
+        `Test Mode Active: ${isTestMode}`,
+        `Post Delay: ${inputPostDelay.value} seconds`,
+        `Selected Target Channels: [${selectedChannelIds.join(', ')}]`,
+        `Cached Channels Count: ${currentChannelData.length}`,
+        `Active Tab ID Connected: ${activeTabId}`,
+        "",
+        "Diagnostic Timeline Logs:",
+        "------------------------"
+    ];
+    
+    const fileContent = systemInfo.concat(diagLogs).join('\n');
+    const blob = new Blob([fileContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `autoposter_diagnostics.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    logDiag("Diagnostics log exported successfully.");
+}
 
 // BBCode Parser function
 function parseBBCode(text) {
@@ -237,6 +281,7 @@ function updatePreview() {
 
 // Load settings from storage
 function loadSettings() {
+    logDiag("Loading settings from storage...");
     chrome.storage.local.get({
         adText: '',
         active: false,
@@ -244,6 +289,7 @@ function loadSettings() {
         channels: [],
         postDelay: 2
     }, (items) => {
+        logDiag(`Settings loaded: active=${items.active}, testMode=${items.testMode}, channelsCount=${items.channels.length}, postDelay=${items.postDelay}`);
         textareaAdContent.value = items.adText;
         isAutoPostingActive = items.active;
         toggleTestMode.checked = items.testMode;
@@ -361,6 +407,7 @@ function isFchatUrl(url) {
 
 // Find F-Chat tab and request current channels list
 function connectToFchatTab() {
+    logDiag("connectToFchatTab() called. Querying active tab...");
     channelListEmpty.textContent = 'Loading...';
     channelListEmpty.classList.remove('hidden');
     channelListContainer.classList.add('hidden');
@@ -368,18 +415,22 @@ function connectToFchatTab() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs && tabs.length > 0 && isFchatUrl(tabs[0].url)) {
             activeTabId = tabs[0].id;
+            logDiag(`Active tab is F-Chat. ID=${activeTabId}. Requesting channels list...`);
             requestChannels();
         } else {
+            logDiag("Active tab is not F-Chat. Scanning background tabs...");
             // Active tab is not F-Chat, scan all tabs to find F-Chat in background
             chrome.tabs.query({}, (allTabs) => {
                 if (allTabs && allTabs.length > 0) {
                     const fchatTab = allTabs.find(t => isFchatUrl(t.url));
                     if (fchatTab) {
                         activeTabId = fchatTab.id;
+                        logDiag(`F-Chat background tab found. ID=${activeTabId}. Requesting channels list...`);
                         requestChannels();
                         return;
                     }
                 }
+                logDiag("No F-Chat tab found in the entire browser.");
                 showInfoMessage('F-Chat tab is not selected. Make sure F-Chat is open in your browser.');
             });
         }
@@ -388,14 +439,18 @@ function connectToFchatTab() {
 
 // Request channel lists from content script
 function requestChannels() {
-    if (!activeTabId) return;
-    
+    if (!activeTabId) {
+        logDiag("requestChannels() aborted: activeTabId is null.");
+        return;
+    }
+    logDiag(`Requesting channels from active tab ${activeTabId}...`);
     channelListEmpty.textContent = 'Loading...';
     channelListEmpty.classList.remove('hidden');
     channelListContainer.classList.add('hidden');
     
     chrome.tabs.sendMessage(activeTabId, { action: 'GET_CHANNELS' })
-        .catch(() => {
+        .catch((err) => {
+            logDiag("Failed to send GET_CHANNELS message: " + (err.message || err));
             showInfoMessage('Unable to connect to tab. Refresh the F-Chat webpage and try again.');
         });
 }
@@ -582,8 +637,10 @@ chrome.runtime.onMessage.addListener((message) => {
     switch (message.action) {
         case 'CHANNELS_LIST':
             if (message.success) {
+                logDiag(`Channels list received. Count=${message.channels.length}`);
                 renderChannels(message.channels);
             } else {
+                logDiag("Failed to receive channels list: " + message.error);
                 showInfoMessage(message.error || 'Connection failed.');
             }
             break;
@@ -592,10 +649,16 @@ chrome.runtime.onMessage.addListener((message) => {
             btnTest.textContent = 'Test Ad';
             updateTestButtonState();
             if (message.success) {
+                logDiag(`Test ad sent successfully on channel #${message.channelName}`);
                 alert(`Test post successful on #${message.channelName}!`);
             } else {
+                logDiag("Test ad sending failed: " + message.error);
                 alert(`Test post failed: ${message.error}`);
             }
+            break;
+            
+        case 'DIAG_LOG':
+            logDiag("[Page Context] " + message.message);
             break;
     }
 });
@@ -735,10 +798,14 @@ btnPreviewToggle.addEventListener('click', () => {
 chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local' && changes.active) {
         isAutoPostingActive = changes.active.newValue;
+        logDiag(`Storage changed externally: active=${isAutoPostingActive}`);
         updateStatusUI(isAutoPostingActive);
         updateTestModeUI();
     }
 });
+
+// Bind export logs button action
+btnExportLogs.addEventListener('click', exportLogs);
 
 // Run load on popup initialization
 document.addEventListener('DOMContentLoaded', loadSettings);

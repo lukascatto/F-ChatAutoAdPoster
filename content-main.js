@@ -8,6 +8,14 @@ let lastTypingTime = 0;
 let disconnectTicks = 0;
 let connectionHooked = false;
 
+function logDiag(msg) {
+    console.log("F-Chat AutoPoster: " + msg);
+    sendToIsolated({
+        action: 'DIAG_LOG',
+        message: msg
+    });
+}
+
 // Hook window.WebSocket to intercept user messaging on any live F-Chat client
 (function interceptWebSocket() {
     try {
@@ -15,6 +23,7 @@ let connectionHooked = false;
         if (!OriginalWebSocket || OriginalWebSocket.__autoposterHooked) return;
 
         const HookedWebSocket = function(url, protocols) {
+            logDiag("WebSocket constructor intercepted. URL=" + url);
             const socket = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
             
             const originalSend = socket.send;
@@ -31,7 +40,7 @@ let connectionHooked = false;
                         const msSinceLastAd = Date.now() - lastQueuePostTime;
                         if (msSinceLastAd < 1050) {
                             const delayMs = 1050 - msSinceLastAd;
-                            console.log(`F-Chat AutoPoster (Socket Intercept): Ad was sent ${msSinceLastAd}ms ago. Delaying user message by ${delayMs}ms to prevent error.`);
+                            logDiag(`Rate-limit threat! Ad sent ${msSinceLastAd}ms ago. Delaying user message (${command}) by ${delayMs}ms.`);
                             setTimeout(() => {
                                 if (socket.readyState === OriginalWebSocket.OPEN) {
                                     originalSend.call(socket, data);
@@ -39,6 +48,7 @@ let connectionHooked = false;
                             }, delayMs);
                             return;
                         }
+                        logDiag(`User sent message (${command}) successfully. Rate-limit clear.`);
                     }
                 }
                 return originalSend.apply(this, arguments);
@@ -53,7 +63,7 @@ let connectionHooked = false;
         HookedWebSocket.__autoposterHooked = true;
         
         window.WebSocket = HookedWebSocket;
-        console.log("F-Chat AutoPoster: Successfully hooked window.WebSocket for live traffic interception.");
+        logDiag("window.WebSocket successfully hooked.");
     } catch (e) {
         console.error("F-Chat AutoPoster: Failed to hook window.WebSocket:", e);
     }
@@ -324,6 +334,7 @@ async function executeTestPost(channelId, text) {
 function disableAutoPostingOnDisconnect() {
     isAutoPosting = false;
     disconnectTicks = 0;
+    logDiag("Triggering FORCE_DISABLE_AUTOPOST message relay...");
     sendToIsolated({
         action: 'FORCE_DISABLE_AUTOPOST'
     });
@@ -360,19 +371,20 @@ function hookConnection() {
                 // Intercept MSG (channel messages) and PRI (private messages)
                 if (command === 'MSG' || command === 'PRI') {
                     lastUserMessageSentTime = Date.now();
-                    console.log(`F-Chat AutoPoster: User sent message (${command}). Delaying ads.`);
+                    logDiag(`Intercepted connection.send(${command}) from client framework.`);
                 }
                 return originalSend.apply(this, arguments);
             };
             core.connection.__autoposterHooked = true;
-            console.log("F-Chat AutoPoster: Hooked connection.send to track user chat activity.");
+            logDiag("fchatCore connection.send successfully hooked.");
         }
     } catch (e) {
-        console.error("F-Chat AutoPoster: Error hooking connection.send:", e);
+        logDiag("Error hooking connection.send: " + e.message);
     }
 }
 
 // Scheduler tick logic (executed every second)
+let totalTicks = 0;
 function handleSchedulerTick() {
     try {
         if (!isAutoPosting) {
@@ -380,11 +392,16 @@ function handleSchedulerTick() {
             return;
         }
         
+        totalTicks++;
+        if (totalTicks % 15 === 0) {
+            logDiag(`Scheduler heartbeat: active=true, tickCount=${totalTicks}, queueSize=${postingQueue.length}, connected=${isFchatConnected()}`);
+        }
+        
         // If F-Chat is disconnected for 5 consecutive ticks, disable auto-posting
         if (!isFchatConnected()) {
             disconnectTicks++;
             if (disconnectTicks >= 5) {
-                console.log("F-Chat AutoPoster: F-Chat is disconnected. Disabling auto-post mode.");
+                logDiag("Disconnected for 5 consecutive ticks. Auto-disabling.");
                 disableAutoPostingOnDisconnect();
             }
             return;
@@ -419,6 +436,7 @@ function handleSchedulerTick() {
             
             // Add to queue
             postingQueue.push(id);
+            logDiag(`Channel #${id} cooldown expired. Added to queue. Queue=[${postingQueue.join(', ')}]`);
         }
         
         // 2. Process the queue if we have items and we aren't currently sending an ad
@@ -437,7 +455,9 @@ function handleSchedulerTick() {
                 const shouldPauseForUser = userIsTyping || (msSinceLastTyping < 4000) || (msSinceLastSent < 1500);
                 
                 if (shouldPauseForUser) {
-                    // Postpone queue execution during this tick
+                    if (totalTicks % 5 === 0) {
+                        logDiag(`Postponed ad send: typing=${userIsTyping}, sinceTyping=${msSinceLastTyping}ms, sinceSent=${msSinceLastSent}ms`);
+                    }
                     return;
                 }
                 
@@ -446,7 +466,7 @@ function handleSchedulerTick() {
             }
         }
     } catch (e) {
-        console.error("F-Chat AutoPoster: Scheduler tick error:", e);
+        logDiag("Scheduler tick error: " + e.message);
     }
 }
 
@@ -472,11 +492,15 @@ initScheduler();
 async function sendAdToChannel(channelId) {
     isCurrentlySending = true;
     const now = Date.now();
-    lastQueuePostTime = now; // Mark the time we initiated the post
+    lastQueuePostTime = now;
+    logDiag(`Initiating ad posting to channel: #${channelId}`);
     
     try {
         const core = getFchatCore();
-        if (!core || !core.conversations) return;
+        if (!core || !core.conversations) {
+            logDiag("Failed to send ad: core or conversations is null.");
+            return;
+        }
         
         const conv = core.conversations.channelConversations.find(c => {
             const cId = c.channel ? c.channel.id : c.key;
@@ -487,25 +511,27 @@ async function sendAdToChannel(channelId) {
             let nextAdVal = conv.nextAd;
             if (typeof nextAdVal !== 'number') nextAdVal = 0;
             
-            // Verify again that it is actually ready (safety check)
             if (now >= nextAdVal) {
                 const originalIsSendingAds = conv.isSendingAds;
                 try {
-                    // Temporarily force isSendingAds to true to ensure F-Chat formats message as ad
                     conv.isSendingAds = true;
                     conv.enteredText = adText;
                     await conv.send();
                     lastPostedTime[channelId] = Date.now();
-                    console.log(`F-Chat AutoPoster: Posted ad to channel: ${channelId}`);
+                    logDiag(`Ad successfully posted to #${channelId}. Next ad cooldown set to: ${conv.nextAd}`);
                 } catch (e) {
-                    console.error("F-Chat AutoPoster: Error sending to " + channelId, e);
+                    logDiag(`Error sending ad to #${channelId}: ` + (e.message || e));
                 } finally {
                     conv.isSendingAds = originalIsSendingAds;
                 }
+            } else {
+                logDiag(`Post aborted: #${channelId} is not ready yet (nextAd=${nextAdVal}, now=${now})`);
             }
+        } else {
+            logDiag(`Failed to post: Channel #${channelId} tab not found.`);
         }
     } catch (e) {
-        console.error("F-Chat AutoPoster: Send ad error:", e);
+        logDiag(`Ad posting execution crash on #${channelId}: ` + e.message);
     } finally {
         isCurrentlySending = false;
     }

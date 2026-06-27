@@ -60,6 +60,9 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 
 ## Changelog
 
+### v1.2.0
+* **Diagnostics Export Button**: Added a new button at the very top of the extension (next to the status indicator) to export a diagnostics log (`autoposter_diagnostics.txt`) to easily troubleshoot and save logs if the extension fails to post ads.
+
 ### v1.1.1
 * **WebSocket-powered Collision Prevention**: Hooks the browser's native `WebSocket` class so it can detect message transmissions directly to further improve typing collision prevention on the official live site (`f-list.net/chat3`) where `window.fchatCore` is not exposed.
 * **Auto-Delaying User Messages**: If you send a message a split-second after the extension sends an ad, the WebSocket hook automatically delays your message by a fraction of a second to ensure it spans exactly 1.05 seconds since the ad. This prevents the server from giving a rate limit error ("You must wait one second between sending channel/private messages" error).
