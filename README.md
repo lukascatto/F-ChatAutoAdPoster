@@ -60,6 +60,10 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 
 ## Changelog
 
+### v1.2.1
+* **Resolved BBCode Link Parsing Crash**: Fixed a parsing crash occurring when typing `[url]` tags (due to undefined content parameters). This crash previously broke the live preview and blocked settings from saving, resulting in disappearing links on reopen.
+* **F-Chat Style Smart Paste wrapping**: Added shift-bypass tracking and textarea intercepting that auto-formats pasted links into `[url=link]selection[/url]` syntax and correctly handles cursor placement (matching the official F-Chat editor behavior).
+
 ### v1.2.0
 * **Diagnostics Export Button**: Added a new button at the very top of the extension (next to the status indicator) to export a diagnostics log (`autoposter_diagnostics.txt`) to easily troubleshoot and save logs if the extension fails to post ads.
 

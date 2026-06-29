@@ -43,7 +43,7 @@ function exportLogs() {
         "F-Chat Auto-Advertiser Diagnostics Log",
         "=====================================",
         `Generated At: ${new Date().toString()}`,
-        `Extension Version: 1.2.0`,
+        `Extension Version: 1.2.1`,
         `User Agent: ${navigator.userAgent}`,
         "",
         "Current Extension State:",
@@ -259,13 +259,24 @@ function parseBBCode(text) {
                 const channelName = node.content.trim();
                 return `<span class="preview-channel-link">#${channelName}</span>`;
             case 'url':
-                let url = node.param.trim() || node.content.trim();
-                let display = node.content.trim() || node.param.trim();
-                if (!url) return '';
-                if (!/^https?:\/\//i.test(url)) {
-                    url = 'https://' + url;
+                const rawParam = (node.param || '').trim();
+                let targetUrl = rawParam || childrenHtml;
+                let displayHtml = childrenHtml || rawParam;
+                
+                if (!rawParam) {
+                    // Strip HTML tags from targetUrl if it was generated from childrenHtml
+                    targetUrl = targetUrl.replace(/<[^>]*>/g, '');
                 }
-                return `<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(display)}</a>`;
+                targetUrl = targetUrl.trim();
+                
+                if (!targetUrl) return '';
+                
+                let absoluteUrl = targetUrl;
+                if (!/^(https?|ftp|mailto):/i.test(targetUrl)) {
+                    absoluteUrl = 'https://' + targetUrl;
+                }
+                
+                return `<a href="${escapeHtml(absoluteUrl)}" target="_blank">${displayHtml}</a>`;
             default:
                 return childrenHtml;
         }
@@ -666,10 +677,60 @@ chrome.runtime.onMessage.addListener((message) => {
 // Event Listeners
 btnRefresh.addEventListener('click', requestChannels);
 
+// Shift key tracking to match F-Chat's paste behavior
+let isShiftPressed = false;
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Shift') isShiftPressed = true;
+});
+window.addEventListener('keyup', (e) => {
+    if (e.key === 'Shift') isShiftPressed = false;
+});
+window.addEventListener('blur', () => {
+    isShiftPressed = false;
+});
+
 // Text area input triggers live preview & saves settings
 textareaAdContent.addEventListener('input', () => {
     updatePreview();
     saveSettings();
+});
+
+// Paste event listener to automatically wrap links in [url=...]...[/url]
+textareaAdContent.addEventListener('paste', (e) => {
+    if (isShiftPressed) return; // Allow normal paste if Shift is held (like F-Chat)
+    
+    const clipboardData = e.clipboardData || window.clipboardData;
+    if (!clipboardData) return;
+    
+    const pastedText = clipboardData.getData('text/plain');
+    if (!pastedText) return;
+    
+    // URL matching pattern (protocols or starting with www.)
+    const isUrl = /^(?:(?:https?|ftps?|irc):\/\/|www\.)[^\s/$.?#"'()]+\.[^\s"()]+/i.test(pastedText.trim());
+    
+    if (isUrl) {
+        e.preventDefault();
+        
+        const start = textareaAdContent.selectionStart;
+        const end = textareaAdContent.selectionEnd;
+        const text = textareaAdContent.value;
+        const selectedText = text.substring(start, end);
+        
+        let prefix = `[url=${pastedText.trim()}]`;
+        let suffix = `[/url]`;
+        let replacement = prefix + selectedText + suffix;
+        
+        textareaAdContent.value = text.substring(0, start) + replacement + text.substring(end);
+        
+        if (selectedText.length > 0) {
+            textareaAdContent.setSelectionRange(start, start + replacement.length);
+        } else {
+            textareaAdContent.setSelectionRange(start + prefix.length, start + prefix.length);
+        }
+        
+        // Trigger input event to update preview and save settings
+        textareaAdContent.dispatchEvent(new Event('input'));
+    }
 });
 
 // Setup timing input changes
