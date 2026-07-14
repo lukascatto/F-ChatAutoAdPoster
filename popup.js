@@ -43,7 +43,7 @@ function exportLogs() {
         "F-Chat Auto-Advertiser Diagnostics Log",
         "=====================================",
         `Generated At: ${new Date().toString()}`,
-        `Extension Version: 1.2.1`,
+        `Extension Version: 1.3.0`,
         `User Agent: ${navigator.userAgent}`,
         "",
         "Current Extension State:",

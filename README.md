@@ -1,5 +1,9 @@
 # F-Chat Auto-Advertiser
 
+<p align="center">
+  <img src="extensionlogo.png" alt="F-Chat Auto-Advertiser Logo" width="128" height="128">
+</p>
+
 A modern, lightweight, and background-throttling-proof browser extension designed to automate advertisement postings to F-Chat 3.0 channels. It respects client rate-limits, allows custom spacing between posts, and includes a live BBCode preview editor.
 
 ---
@@ -59,6 +63,10 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 ---
 
 ## Changelog
+
+### v1.3.0
+* **New Extension Logo**: Updated the official extension logo/icon to the new high-resolution design (`extensionlogo.png`).
+* **Removed Old Icon**: Deleted the old, unused `icon.png` asset.
 
 ### v1.2.1
 * **Resolved BBCode Link Parsing Crash**: Fixed a parsing crash occurring when typing `[url]` tags (due to undefined content parameters). This crash previously broke the live preview and blocked settings from saving, resulting in disappearing links on reopen.
