@@ -4,9 +4,10 @@
 // Global activity and rate-limiting variables
 let lastUserMessageSentTime = 0;
 let lastQueuePostTime = 0;
-let lastTypingTime = 0;
-let disconnectTicks = 0;
+let disconnectStartTime = 0;
+let lastHeartbeatTime = 0;
 let connectionHooked = false;
+let queueTimer = null;
 
 function logDiag(msg) {
     console.log("F-Chat AutoPoster: " + msg);
@@ -16,7 +17,7 @@ function logDiag(msg) {
     });
 }
 
-// Hook window.WebSocket to intercept user messaging on any live F-Chat client
+// Hook window.WebSocket to intercept user messaging and ad transmissions
 (function interceptWebSocket() {
     try {
         const OriginalWebSocket = window.WebSocket;
@@ -26,6 +27,12 @@ function logDiag(msg) {
             logDiag("WebSocket constructor intercepted. URL=" + url);
             const socket = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
             
+            // Immediately shut off autoposting if WebSocket closes (e.g. user logs out)
+            socket.addEventListener('close', () => {
+                logDiag("WebSocket closed (logged out or disconnected). Auto-disabling immediately.");
+                disableAutoPostingOnDisconnect();
+            });
+
             const originalSend = socket.send;
             socket.send = function(data) {
                 if (typeof data === 'string') {
@@ -33,22 +40,32 @@ function logDiag(msg) {
                     const spaceIdx = data.indexOf(' ');
                     const command = spaceIdx !== -1 ? data.substring(0, spaceIdx) : data;
                     
-                    if (command === 'MSG' || command === 'PRI') {
-                        lastUserMessageSentTime = Date.now();
+                    if (command === 'LRP') {
+                        // Extension or manual advertisement sent
+                        lastQueuePostTime = Date.now();
+                        scheduleNextQueueCheck();
+                    } else if (command === 'MSG' || command === 'PRI' || command === 'RLL') {
+                        const now = Date.now();
+                        const msSinceLastAd = now - lastQueuePostTime;
                         
-                        // Check if an ad was sent by the extension very recently
-                        const msSinceLastAd = Date.now() - lastQueuePostTime;
+                        // Check if an ad was sent by the extension in less than 1 second (with 50ms buffer)
                         if (msSinceLastAd < 1050) {
                             const delayMs = 1050 - msSinceLastAd;
                             logDiag(`Rate-limit threat! Ad sent ${msSinceLastAd}ms ago. Delaying user message (${command}) by ${delayMs}ms.`);
                             setTimeout(() => {
                                 if (socket.readyState === OriginalWebSocket.OPEN) {
                                     originalSend.call(socket, data);
+                                    lastUserMessageSentTime = Date.now();
+                                    logDiag(`Delayed user message (${command}) dispatched. lastUserMessageSentTime updated.`);
+                                    scheduleNextQueueCheck();
                                 }
                             }, delayMs);
                             return;
                         }
+                        
+                        lastUserMessageSentTime = now;
                         logDiag(`User sent message (${command}) successfully. Rate-limit clear.`);
+                        scheduleNextQueueCheck();
                     }
                 }
                 return originalSend.apply(this, arguments);
@@ -154,8 +171,8 @@ function isFchatConnected() {
     if (!root) return false;
     
     // In Chat.vue, there is a boolean `connected` property
-    if (root.connected !== undefined && root.connected) {
-        return true;
+    if (root.connected !== undefined) {
+        return !!root.connected;
     }
     
     // Fallback: check if conversations exist and have joined channels
@@ -200,7 +217,16 @@ window.addEventListener('message', (event) => {
                     isAutoPosting = cmd.settings.active;
                     selectedChannels = cmd.settings.channels || [];
                     adText = cmd.settings.adText || '';
-                    postDelay = (cmd.settings.postDelay || 1) * 1000;
+                    postDelay = Math.max(1000, (cmd.settings.postDelay || 1) * 1000);
+                    if (isAutoPosting) {
+                        scheduleNextQueueCheck();
+                    } else {
+                        postingQueue = [];
+                        if (queueTimer !== null) {
+                            clearTimeout(queueTimer);
+                            queueTimer = null;
+                        }
+                    }
                     break;
                     
                 case 'TEST_POST':
@@ -254,8 +280,7 @@ function sendChannelsList() {
             let nextAdVal = c.nextAd;
             if (typeof nextAdVal !== 'number') nextAdVal = 0;
             
-            const delayOffset = isAutoPosting ? postDelay : 0;
-            const cooldownRemaining = Math.max(0, Math.ceil((nextAdVal + delayOffset - Date.now()) / 1000));
+            const cooldownRemaining = Math.max(0, Math.ceil((nextAdVal - Date.now()) / 1000));
             
             return {
                 id: channelId,
@@ -306,6 +331,16 @@ async function executeTestPost(channelId, text) {
         const originalIsSendingAds = conv.isSendingAds;
         const originalNextAd = conv.nextAd;
         
+        let nextAdVal = conv.nextAd;
+        if (typeof nextAdVal === 'number' && nextAdVal > 0) {
+            const now = Date.now();
+            if (now < nextAdVal + 1000) {
+                const waitSec = Math.ceil((nextAdVal + 1000 - now) / 1000);
+                sendToIsolated({ action: 'TEST_RESULT', success: false, error: `Channel is still on cooldown. Please wait ${waitSec}s.` });
+                return;
+            }
+        }
+        
         // Override settings to force advertisement send
         conv.isSendingAds = true;
         conv.enteredText = text;
@@ -332,49 +367,46 @@ async function executeTestPost(channelId, text) {
 // Rate limiting, user typing detection, and disconnect tracking variables
 
 function disableAutoPostingOnDisconnect() {
+    if (!isAutoPosting) return;
     isAutoPosting = false;
-    disconnectTicks = 0;
+    disconnectStartTime = 0;
+    postingQueue = [];
+    if (queueTimer !== null) {
+        clearTimeout(queueTimer);
+        queueTimer = null;
+    }
     logDiag("Triggering FORCE_DISABLE_AUTOPOST message relay...");
     sendToIsolated({
         action: 'FORCE_DISABLE_AUTOPOST'
     });
 }
 
-// Track active typing in any textbox or textarea in the page
-document.addEventListener('input', (e) => {
-    const target = e.target;
-    if (target && (target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && target.type === 'text'))) {
-        if (target.value && target.value.trim().length > 0) {
-            lastTypingTime = Date.now();
-        }
-    }
-}, true);
-
-// Check if user is currently focused on an input element with text
-function isUserCurrentlyTyping() {
-    const activeEl = document.activeElement;
-    if (activeEl && (activeEl.tagName === 'TEXTAREA' || (activeEl.tagName === 'INPUT' && activeEl.type === 'text'))) {
-        if (activeEl.value && activeEl.value.trim().length > 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Hook F-Chat client's connection.send function to intercept manual messages
+// Hook F-Chat client's connection.send and closed event to intercept manual messages and logout
 function hookConnection() {
     try {
         const core = getFchatCore();
         if (core && core.connection && !core.connection.__autoposterHooked) {
             const originalSend = core.connection.send;
             core.connection.send = function(command, data) {
-                // Intercept MSG (channel messages) and PRI (private messages)
-                if (command === 'MSG' || command === 'PRI') {
+                // Intercept MSG (channel messages), PRI (private messages), and RLL (dice rolls)
+                if (command === 'MSG' || command === 'PRI' || command === 'RLL') {
                     lastUserMessageSentTime = Date.now();
                     logDiag(`Intercepted connection.send(${command}) from client framework.`);
+                    scheduleNextQueueCheck();
+                } else if (command === 'LRP') {
+                    lastQueuePostTime = Date.now();
+                    scheduleNextQueueCheck();
                 }
                 return originalSend.apply(this, arguments);
             };
+            
+            if (typeof core.connection.onEvent === 'function') {
+                core.connection.onEvent('closed', () => {
+                    logDiag("Connection closed event from client framework. Auto-disabling immediately.");
+                    disableAutoPostingOnDisconnect();
+                });
+            }
+            
             core.connection.__autoposterHooked = true;
             logDiag("fchatCore connection.send successfully hooked.");
         }
@@ -383,7 +415,74 @@ function hookConnection() {
     }
 }
 
-// Scheduler tick logic (executed every second)
+// High-precision queue scheduling functions
+function scheduleTimer(delayMs) {
+    if (queueTimer !== null) {
+        clearTimeout(queueTimer);
+        queueTimer = null;
+    }
+    queueTimer = setTimeout(() => {
+        queueTimer = null;
+        processPostingQueue();
+    }, Math.max(0, delayMs));
+}
+
+function scheduleNextQueueCheck() {
+    if (!isAutoPosting || postingQueue.length === 0 || isCurrentlySending) return;
+    processPostingQueue();
+}
+
+// Core queue processor
+function processPostingQueue() {
+    if (!isAutoPosting || postingQueue.length === 0 || isCurrentlySending) {
+        return;
+    }
+    
+    const now = Date.now();
+    const msSinceLastAd = now - lastQueuePostTime;
+    const msSinceLastUserMsg = now - lastUserMessageSentTime;
+    
+    // 1. Must satisfy postDelay (e.g. exactly 1000ms) since the previous ad
+    const adDelayRemaining = Math.max(0, postDelay - msSinceLastAd);
+    
+    // 2. Must satisfy 1050ms since the user's last message anywhere to avoid "wait 1 second" error
+    const userMsgDelayRemaining = Math.max(0, 1050 - msSinceLastUserMsg);
+    
+    // 3. Must satisfy at least 1 second (1050ms) after the target channel's 10-minute cooldown ends
+    let channelCooldownRemaining = 0;
+    const nextChannelId = postingQueue[0];
+    const core = getFchatCore();
+    if (core && core.conversations) {
+        const conv = core.conversations.channelConversations.find(c => {
+            const cId = c.channel ? c.channel.id : c.key;
+            return cId === nextChannelId;
+        });
+        if (conv) {
+            let nextAdVal = conv.nextAd;
+            if (typeof nextAdVal === 'number' && nextAdVal > 0) {
+                channelCooldownRemaining = Math.max(0, (nextAdVal + 1050) - now);
+            }
+        }
+    }
+    
+    const waitRemaining = Math.max(adDelayRemaining, userMsgDelayRemaining, channelCooldownRemaining);
+    
+    if (waitRemaining > 0) {
+        // Not ready yet. Schedule timer for the exact remaining duration
+        scheduleTimer(waitRemaining);
+        return;
+    }
+    
+    if (queueTimer !== null) {
+        clearTimeout(queueTimer);
+        queueTimer = null;
+    }
+    
+    const nextChannelIdToSend = postingQueue.shift();
+    sendAdToChannel(nextChannelIdToSend);
+}
+
+// Scheduler tick logic (executed every 50ms by the background worker, or 100ms fallback)
 let totalTicks = 0;
 function handleSchedulerTick() {
     try {
@@ -393,20 +492,24 @@ function handleSchedulerTick() {
         }
         
         totalTicks++;
-        if (totalTicks % 15 === 0) {
+        const now = Date.now();
+        if (now - lastHeartbeatTime >= 15000) {
+            lastHeartbeatTime = now;
             logDiag(`Scheduler heartbeat: active=true, tickCount=${totalTicks}, queueSize=${postingQueue.length}, connected=${isFchatConnected()}`);
         }
         
-        // If F-Chat is disconnected for 5 consecutive ticks, disable auto-posting
+        // If F-Chat is disconnected for 5 continuous seconds, disable auto-posting
         if (!isFchatConnected()) {
-            disconnectTicks++;
-            if (disconnectTicks >= 5) {
-                logDiag("Disconnected for 5 consecutive ticks. Auto-disabling.");
+            if (!disconnectStartTime) {
+                disconnectStartTime = now;
+            } else if (now - disconnectStartTime >= 5000) {
+                logDiag("Disconnected for 5 continuous seconds. Auto-disabling.");
                 disableAutoPostingOnDisconnect();
+                return;
             }
             return;
         } else {
-            disconnectTicks = 0;
+            disconnectStartTime = 0;
         }
         
         const core = getFchatCore();
@@ -415,10 +518,10 @@ function handleSchedulerTick() {
         // Ensure connection is hooked
         hookConnection();
         
-        const now = Date.now();
         const channels = core.conversations.channelConversations;
+        let queueModified = false;
         
-        // 1. Scan and queue any channels whose cooldown has expired
+        // 1. Scan and queue any channels whose native cooldown has expired plus at least 1 second buffer
         for (const conv of channels) {
             if (!conv) continue;
             const id = conv.channel ? conv.channel.id : conv.key;
@@ -426,44 +529,23 @@ function handleSchedulerTick() {
             // Is it selected for auto-posting?
             if (!selectedChannels.includes(id)) continue;
             
-            // Has the local cooldown + post delay expired?
+            // Has the channel's native cooldown expired (+1s buffer)?
             let nextAdVal = conv.nextAd;
             if (typeof nextAdVal !== 'number') nextAdVal = 0;
-            if (now < nextAdVal + postDelay) continue;
+            if (nextAdVal > 0 && now < nextAdVal + 1050) continue;
             
             // Is it already queued?
             if (postingQueue.includes(id)) continue;
             
             // Add to queue
             postingQueue.push(id);
-            logDiag(`Channel #${id} cooldown expired. Added to queue. Queue=[${postingQueue.join(', ')}]`);
+            queueModified = true;
+            logDiag(`Channel #${id} cooldown expired (+1s buffer). Added to queue. Queue=[${postingQueue.join(', ')}]`);
         }
         
-        // 2. Process the queue if we have items and we aren't currently sending an ad
-        if (postingQueue.length > 0 && !isCurrentlySending) {
-            // Check if stagger delay (postDelay) has elapsed since the last post
-            if (now - lastQueuePostTime >= postDelay) {
-                // Check if user is active/typing or just sent a message
-                const userIsTyping = isUserCurrentlyTyping();
-                const msSinceLastTyping = now - lastTypingTime;
-                const msSinceLastSent = now - lastUserMessageSentTime;
-                
-                // Pause ads if:
-                // 1. User is actively typing (focused on an input with text)
-                // 2. User typed something in the last 4 seconds (handles brief pauses)
-                // 3. User sent a message in the last 1.5 seconds (prevents rate limit clashes)
-                const shouldPauseForUser = userIsTyping || (msSinceLastTyping < 4000) || (msSinceLastSent < 1500);
-                
-                if (shouldPauseForUser) {
-                    if (totalTicks % 5 === 0) {
-                        logDiag(`Postponed ad send: typing=${userIsTyping}, sinceTyping=${msSinceLastTyping}ms, sinceSent=${msSinceLastSent}ms`);
-                    }
-                    return;
-                }
-                
-                const nextChannelId = postingQueue.shift();
-                sendAdToChannel(nextChannelId);
-            }
+        // 2. Process queue if items were added or ready
+        if (queueModified || (postingQueue.length > 0 && !isCurrentlySending)) {
+            processPostingQueue();
         }
     } catch (e) {
         logDiag("Scheduler tick error: " + e.message);
@@ -473,15 +555,13 @@ function handleSchedulerTick() {
 let receivedFirstTick = false;
 let fallbackInterval = null;
 
-// Initialize scheduler. It prefers ticks relayed from the Web Worker running
+// Initialize scheduler. Prepares ticks relayed from the Web Worker running
 // in the isolated world (to bypass CSP and avoid console errors).
 function initScheduler() {
-    // Wait up to 2.5 seconds for a tick from the isolated world Web Worker.
-    // If none arrives (e.g. extension was reloaded or worker failed), fall back to standard setInterval.
     setTimeout(() => {
         if (!receivedFirstTick && !fallbackInterval) {
             console.warn("F-Chat AutoPoster: No tick received from isolated scheduler. Falling back to standard setInterval.");
-            fallbackInterval = setInterval(handleSchedulerTick, 1000);
+            fallbackInterval = setInterval(handleSchedulerTick, 100);
         }
     }, 2500);
 }
@@ -511,7 +591,8 @@ async function sendAdToChannel(channelId) {
             let nextAdVal = conv.nextAd;
             if (typeof nextAdVal !== 'number') nextAdVal = 0;
             
-            if (now >= nextAdVal) {
+            // Ensure at least 1 second (1000ms) has passed since the timer ended
+            if (nextAdVal === 0 || now >= nextAdVal + 1000) {
                 const originalIsSendingAds = conv.isSendingAds;
                 try {
                     conv.isSendingAds = true;
@@ -525,7 +606,7 @@ async function sendAdToChannel(channelId) {
                     conv.isSendingAds = originalIsSendingAds;
                 }
             } else {
-                logDiag(`Post aborted: #${channelId} is not ready yet (nextAd=${nextAdVal}, now=${now})`);
+                logDiag(`Post aborted: #${channelId} is not ready yet (nextAd=${nextAdVal} + 1000ms buffer, now=${now})`);
             }
         } else {
             logDiag(`Failed to post: Channel #${channelId} tab not found.`);
@@ -534,6 +615,7 @@ async function sendAdToChannel(channelId) {
         logDiag(`Ad posting execution crash on #${channelId}: ` + e.message);
     } finally {
         isCurrentlySending = false;
+        scheduleNextQueueCheck();
     }
 }
 

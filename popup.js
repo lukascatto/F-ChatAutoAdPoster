@@ -43,7 +43,7 @@ function exportLogs() {
         "F-Chat Auto-Advertiser Diagnostics Log",
         "=====================================",
         `Generated At: ${new Date().toString()}`,
-        `Extension Version: 1.3.0`,
+        `Extension Version: ${typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest().version : '1.3.1'}`,
         `User Agent: ${navigator.userAgent}`,
         "",
         "Current Extension State:",

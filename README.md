@@ -10,16 +10,16 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 
 ## Key Features
 
-* **Sequential Auto-Posting**: Spreads out postings to target channels using a configurable Post Delay.
-* **Smart Cooldown Handling**: Detects channel-specific native cooldowns (typically 10 minutes) and automatically posts as soon as the timer and the Post Delay expire.
-* **Unthrottled Background Execution**: Uses a custom Web Worker scheduler running on a separate OS thread to ensure it ticks precisely every second even when the tab is out of focus, minimized, or you are completely alt-tabbed.
+* **Sequential Auto-Posting**: Spreads out postings to target channels using a configurable, high-precision Post Delay (exact to the millisecond).
+* **Smart Cooldown Handling**: Detects channel-specific native cooldowns (typically 10 minutes) and automatically posts as soon as the timer expires.
+* **Unthrottled High-Resolution Background Execution**: Uses a custom Web Worker scheduler running on a separate OS thread ticking every 50ms, ensuring sub-second post delays even when the tab is out of focus, minimized, or alt-tabbed.
 * **No CSP Blocks**: Uses a secure extension iframe wrapper to bypass the website's Content Security Policy (CSP), keeping your browser console completely clear of warnings.
 * **In-Place Live UI Updates**: Displays countdown clock badges that tick down smoothly in real time without scroll-jumping or checkbox flickering.
 * **Live BBCode Preview**: Displays formatted BBCode in real time with support for nested `[noparse]`, custom colors, character profiles `[user]`, clickable avatars `[icon]`, and emojis `[eicon]` loaded from official assets.
 * **Test Mode**: Toggles single-channel selection so you can safely send a single test ad to a channel before starting automation.
 * **F-Chat 3.0 Theme & Brand**: Features the official F-Chat desktop client icon and matching dark navy theme variables.
-* **Typing Collision Prevention**: Detects when you are actively typing or have recently sent a message, and automatically pauses ad dispatches to avoid server-level "wait one second" rate-limit error clashing.
-* **Automatic Logout Protection**: Monitors connection status and automatically deactivates auto-posting if you log out or are disconnected for more than 5 seconds.
+* **Bidirectional Rate-Limit Collision Prevention**: Automatically spaces ads and manual user messages by 1.05 seconds in both directions to prevent server-level "wait one second" rate-limit errors, without pausing ads while you type.
+* **Immediate Logout Protection**: Immediately deactivates auto-posting upon logging out or WebSocket closure.
 
 ---
 
@@ -63,6 +63,13 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 ---
 
 ## Changelog
+
+### v1.3.1
+* **High-Precision 1-Second Post Delay**: Upgraded scheduler to tick at 50ms with sub-millisecond `setTimeout` queue coordination, making a 1-second delay fire precisely 1.0 seconds after the previous post.
+* **Post-Cooldown Safety Buffer**: After a channel's 10-minute cooldown timer reaches 0, the extension waits at least 1 full second before resending an ad to that channel, preventing server-side "Error: You may only post an ad to a channel every ten minutes."
+* **Removed Typing-Based Pauses**: Ads no longer pause while actively typing or focusing inside message boxes.
+* **Symmetric Rate-Limit Protection**: Enforces 1.05s spacing symmetrically between ads and manual user messages (`MSG`, `PRI`, `RLL`) in both directions to prevent "wait one second" rate-limit collisions.
+* **Instant Logout Deactivation**: Auto-posting immediately deactivates upon logging out or WebSocket closure.
 
 ### v1.3.0
 * **New Extension Logo**: Updated the official extension logo/icon to the new high-resolution design (`extensionlogo.png`).

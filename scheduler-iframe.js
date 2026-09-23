@@ -5,7 +5,7 @@ try {
     const workerCode = `
         setInterval(() => {
             postMessage('tick');
-        }, 1000);
+        }, 50);
     `;
     const blob = new Blob([workerCode], { type: 'application/javascript' });
     const worker = new Worker(URL.createObjectURL(blob));
