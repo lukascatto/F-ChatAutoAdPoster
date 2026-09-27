@@ -3,6 +3,7 @@
 
 // Global activity and rate-limiting variables
 let lastUserMessageSentTime = 0;
+let pendingUserMessageDispatchTime = 0;
 let lastQueuePostTime = 0;
 let disconnectStartTime = 0;
 let lastHeartbeatTime = 0;
@@ -33,6 +34,13 @@ function logDiag(msg) {
                 disableAutoPostingOnDisconnect();
             });
 
+            // Log server errors for diagnostics
+            socket.addEventListener('message', (event) => {
+                if (typeof event.data === 'string' && event.data.startsWith('ERR ')) {
+                    logDiag(`Server error response intercepted: ${event.data}`);
+                }
+            });
+
             const originalSend = socket.send;
             socket.send = function(data) {
                 if (typeof data === 'string') {
@@ -46,12 +54,23 @@ function logDiag(msg) {
                         scheduleNextQueueCheck();
                     } else if (command === 'MSG' || command === 'PRI' || command === 'RLL') {
                         const now = Date.now();
-                        const msSinceLastAd = now - lastQueuePostTime;
                         
-                        // Check if an ad was sent by the extension in less than 1 second (with 50ms buffer)
-                        if (msSinceLastAd < 1050) {
-                            const delayMs = 1050 - msSinceLastAd;
-                            logDiag(`Rate-limit threat! Ad sent ${msSinceLastAd}ms ago. Delaying user message (${command}) by ${delayMs}ms.`);
+                        // Calculate earliest safe dispatch time for this user message:
+                        // 1. Must be >= 1050ms after the last ad
+                        // 2. Must be >= 1050ms after any previously scheduled pending user message
+                        const minAfterAd = lastQueuePostTime + 1050;
+                        const minAfterPriorUserMsg = pendingUserMessageDispatchTime > now ? pendingUserMessageDispatchTime + 1050 : 0;
+                        const targetDispatchTime = Math.max(now, minAfterAd, minAfterPriorUserMsg);
+                        
+                        // Reserve the dispatch time so any subsequent user message or ad knows when this message will clear
+                        pendingUserMessageDispatchTime = targetDispatchTime;
+                        
+                        // Immediately pause and yield the ad queue!
+                        scheduleNextQueueCheck();
+                        
+                        const delayMs = targetDispatchTime - now;
+                        if (delayMs > 0) {
+                            logDiag(`Rate-limit protection! Delaying user message (${command}) by ${delayMs}ms to avoid server collision.`);
                             setTimeout(() => {
                                 if (socket.readyState === OriginalWebSocket.OPEN) {
                                     originalSend.call(socket, data);
@@ -63,9 +82,11 @@ function logDiag(msg) {
                             return;
                         }
                         
-                        lastUserMessageSentTime = now;
+                        originalSend.call(socket, data);
+                        lastUserMessageSentTime = Date.now();
                         logDiag(`User sent message (${command}) successfully. Rate-limit clear.`);
                         scheduleNextQueueCheck();
+                        return;
                     }
                 }
                 return originalSend.apply(this, arguments);
@@ -370,6 +391,7 @@ function disableAutoPostingOnDisconnect() {
     if (!isAutoPosting) return;
     isAutoPosting = false;
     disconnectStartTime = 0;
+    pendingUserMessageDispatchTime = 0;
     postingQueue = [];
     if (queueTimer !== null) {
         clearTimeout(queueTimer);
@@ -390,9 +412,12 @@ function hookConnection() {
             core.connection.send = function(command, data) {
                 // Intercept MSG (channel messages), PRI (private messages), and RLL (dice rolls)
                 if (command === 'MSG' || command === 'PRI' || command === 'RLL') {
-                    lastUserMessageSentTime = Date.now();
                     logDiag(`Intercepted connection.send(${command}) from client framework.`);
-                    scheduleNextQueueCheck();
+                    if (!this.socket || !this.socket.__autoposterHooked) {
+                        lastUserMessageSentTime = Date.now();
+                        pendingUserMessageDispatchTime = Date.now();
+                        scheduleNextQueueCheck();
+                    }
                 } else if (command === 'LRP') {
                     lastQueuePostTime = Date.now();
                     scheduleNextQueueCheck();
@@ -448,7 +473,10 @@ function processPostingQueue() {
     // 2. Must satisfy 1050ms since the user's last message anywhere to avoid "wait 1 second" error
     const userMsgDelayRemaining = Math.max(0, 1050 - msSinceLastUserMsg);
     
-    // 3. Must satisfy at least 1 second (1050ms) after the target channel's 10-minute cooldown ends
+    // 3. Must yield if a user message is currently pending/delayed (must wait until 1050ms AFTER that user message dispatches)
+    const pendingUserMsgRemaining = Math.max(0, (pendingUserMessageDispatchTime + 1050) - now);
+    
+    // 4. Must satisfy at least 1 second (1050ms) after the target channel's 10-minute cooldown ends
     let channelCooldownRemaining = 0;
     const nextChannelId = postingQueue[0];
     const core = getFchatCore();
@@ -465,7 +493,7 @@ function processPostingQueue() {
         }
     }
     
-    const waitRemaining = Math.max(adDelayRemaining, userMsgDelayRemaining, channelCooldownRemaining);
+    const waitRemaining = Math.max(adDelayRemaining, userMsgDelayRemaining, pendingUserMsgRemaining, channelCooldownRemaining);
     
     if (waitRemaining > 0) {
         // Not ready yet. Schedule timer for the exact remaining duration

@@ -64,6 +64,11 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 
 ## Changelog
 
+### v1.3.1.1
+* **Fixed Multi-Channel Rate-Limit Collision Bug**: Fixed a race condition where sending a manual chat or private message while the extension was actively posting across a multi-channel queue caused a "You must wait one second between sending channel/private messages." error and dropped the message.
+* **Ad Queue Yielding & User Message Priority**: The ad queue now tracks pending user message dispatches and automatically yields, ensuring all queued ads wait at least 1.05s after any user message is transmitted before resuming. Consecutive user messages are also safely spaced to prevent self-collision.
+* **Server Error Diagnostics**: Incoming server `ERR` packets are now logged in the diagnostics output for troubleshooting.
+
 ### v1.3.1
 * **High-Precision 1-Second Post Delay**: Upgraded scheduler to tick at 50ms with sub-millisecond `setTimeout` queue coordination, making a 1-second delay fire precisely 1.0 seconds after the previous post.
 * **Post-Cooldown Safety Buffer**: After a channel's 10-minute cooldown timer reaches 0, the extension waits at least 1 full second before resending an ad to that channel, preventing server-side "Error: You may only post an ad to a channel every ten minutes."
