@@ -16,7 +16,22 @@ try {
             action: 'SCHEDULER_TICK'
         }, '*');
     };
+    worker.onerror = (err) => {
+        console.error("F-Chat AutoPoster: Worker error:", err);
+    };
+
+    // Secondary iframe-level heartbeat (fires every 250ms) to ensure continuous execution
+    setInterval(() => {
+        window.parent.postMessage({
+            source: 'fchat-autoposter-iframe',
+            action: 'SCHEDULER_TICK'
+        }, '*');
+    }, 250);
+
+
     console.log("F-Chat AutoPoster: Background Web Worker running in extension iframe.");
 } catch (e) {
     console.error("F-Chat AutoPoster: Failed to start worker in iframe:", e);
 }
+
+

@@ -59,14 +59,25 @@ window.addEventListener('message', (event) => {
     }
 });
 
-// Create hidden iframe running in extension context to spawn CSP-exempt worker
+// Create off-screen iframe running in extension context to spawn CSP-exempt worker
 function initIframeScheduler() {
     try {
         if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
         
+        // Remove existing frame if present
+        const oldFrame = document.getElementById('fchat-autoposter-scheduler-frame');
+        if (oldFrame) oldFrame.remove();
+
         const iframe = document.createElement('iframe');
+        iframe.id = 'fchat-autoposter-scheduler-frame';
         iframe.src = chrome.runtime.getURL('scheduler-iframe.html');
-        iframe.style.display = 'none';
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.setAttribute('tabindex', '-1');
+        iframe.title = 'F-Chat AutoPoster Scheduler';
+        // Note: Using display: none causes Chromium's FrameThrottler to completely freeze the subframe
+        // and suspend all cross-frame postMessage events when switching away to another tab.
+        // Giving it minimal explicit geometry (16x16) and placing it off-screen prevents background freezing.
+        iframe.style.cssText = 'position: fixed !important; top: -1000px !important; left: -1000px !important; width: 16px !important; height: 16px !important; opacity: 0.001 !important; pointer-events: none !important; border: 0 !important; z-index: -999999 !important; visibility: visible !important;';
         
         if (document.body) {
             document.body.appendChild(iframe);
@@ -82,3 +93,4 @@ function initIframeScheduler() {
 
 // Initialize the scheduler iframe
 initIframeScheduler();
+

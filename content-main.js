@@ -9,6 +9,8 @@ let disconnectStartTime = 0;
 let lastHeartbeatTime = 0;
 let connectionHooked = false;
 let queueTimer = null;
+let explicitLogoutOccurred = false;
+let isTemporarilyDisconnected = false;
 
 function logDiag(msg) {
     console.log("F-Chat AutoPoster: " + msg);
@@ -28,10 +30,25 @@ function logDiag(msg) {
             logDiag("WebSocket constructor intercepted. URL=" + url);
             const socket = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
             
-            // Immediately shut off autoposting if WebSocket closes (e.g. user logs out)
-            socket.addEventListener('close', () => {
-                logDiag("WebSocket closed (logged out or disconnected). Auto-disabling immediately.");
-                disableAutoPostingOnDisconnect();
+            // On open, ensure flags are clean and resume if reconnecting
+            socket.addEventListener('open', () => {
+                logDiag("Intercepted WebSocket opened successfully.");
+                explicitLogoutOccurred = false;
+                if (isAutoPosting && isTemporarilyDisconnected) {
+                    resumeQueueAfterReconnect();
+                }
+            });
+
+            // WebSocket closure detection: distinguish explicit logout vs temporary disconnect
+            socket.addEventListener('close', (event) => {
+                logDiag(`WebSocket closed (code=${event.code}, reason="${event.reason || ''}").`);
+                if (explicitLogoutOccurred) {
+                    logDiag("Explicit logout detected. Disabling auto-posting.");
+                    disableAutoPostingOnDisconnect();
+                } else {
+                    logDiag("Socket closed unexpectedly. Short disconnect detected - pausing ad queue.");
+                    pauseQueueForDisconnect();
+                }
             });
 
             // Log server errors for diagnostics
@@ -188,20 +205,27 @@ function getFchatCore() {
 
 // Check if F-Chat is active and connected
 function isFchatConnected() {
-    const root = findVueRoot();
-    if (!root) return false;
-    
-    // In Chat.vue, there is a boolean `connected` property
-    if (root.connected !== undefined) {
-        return !!root.connected;
+    try {
+        // 1. Direct check on core connection if available
+        const core = getFchatCore();
+        if (core && core.connection && typeof core.connection.isOpen === 'boolean') {
+            return core.connection.isOpen;
+        }
+        
+        // 2. In Chat.vue, there is a boolean `connected` property
+        const root = findVueRoot();
+        if (root && root.connected !== undefined) {
+            return !!root.connected;
+        }
+        
+        // Fallback: check if conversations exist and have joined channels
+        const conversations = getFchatConversations();
+        if (conversations && conversations.channelConversations && conversations.channelConversations.length > 0) {
+            return true;
+        }
+    } catch (e) {
+        // Fallback
     }
-    
-    // Fallback: check if conversations exist and have joined channels
-    const conversations = getFchatConversations();
-    if (conversations && conversations.channelConversations && conversations.channelConversations.length > 0) {
-        return true;
-    }
-    
     return false;
 }
 
@@ -255,11 +279,7 @@ window.addEventListener('message', (event) => {
                     break;
                     
                 case 'SCHEDULER_TICK':
-                    receivedFirstTick = true;
-                    if (fallbackInterval) {
-                        clearInterval(fallbackInterval);
-                        fallbackInterval = null;
-                    }
+                    lastTickTimestamp = Date.now();
                     handleSchedulerTick();
                     break;
             }
@@ -284,7 +304,7 @@ function sendChannelsList() {
             sendToIsolated({
                 action: 'CHANNELS_LIST',
                 success: false,
-                error: 'Please log in to F-Chat first.'
+                error: isTemporarilyDisconnected ? 'Reconnecting to F-Chat...' : 'Please log in to F-Chat first.'
             });
             return;
         }
@@ -385,14 +405,47 @@ async function executeTestPost(channelId, text) {
     }
 }
 
-// Rate limiting, user typing detection, and disconnect tracking variables
+function pauseQueueForDisconnect() {
+    if (!isAutoPosting) return;
+    isTemporarilyDisconnected = true;
+    if (!disconnectStartTime) disconnectStartTime = Date.now();
+    
+    // Clear queue execution timer and sending guard
+    if (queueTimer !== null) {
+        clearTimeout(queueTimer);
+        queueTimer = null;
+    }
+    isCurrentlySending = false;
+    logDiag("Short disconnect detected: auto-poster paused. Auto-posting remains ACTIVE and will resume when reconnected.");
+}
+
+function resumeQueueAfterReconnect() {
+    if (!isAutoPosting) return;
+    const offlineSec = disconnectStartTime ? Math.round((Date.now() - disconnectStartTime) / 1000) : 0;
+    logDiag(`F-Chat connection re-established (was disconnected for ~${offlineSec}s). Resuming auto-posting!`);
+    
+    isTemporarilyDisconnected = false;
+    disconnectStartTime = 0;
+    explicitLogoutOccurred = false;
+    isCurrentlySending = false;
+    
+    // Ensure framework connection is hooked
+    hookConnection();
+    
+    // Re-trigger queue checking so ready channels can be posted
+    scheduleNextQueueCheck();
+}
 
 function disableAutoPostingOnDisconnect() {
     if (!isAutoPosting) return;
+    logDiag("Explicit logout detected: Auto-posting fully disabled.");
     isAutoPosting = false;
+    explicitLogoutOccurred = false;
+    isTemporarilyDisconnected = false;
     disconnectStartTime = 0;
     pendingUserMessageDispatchTime = 0;
     postingQueue = [];
+    isCurrentlySending = false;
     if (queueTimer !== null) {
         clearTimeout(queueTimer);
         queueTimer = null;
@@ -403,7 +456,7 @@ function disableAutoPostingOnDisconnect() {
     });
 }
 
-// Hook F-Chat client's connection.send and closed event to intercept manual messages and logout
+// Hook F-Chat client's connection to intercept manual messages, logout, and reconnect events
 function hookConnection() {
     try {
         const core = getFchatCore();
@@ -424,21 +477,69 @@ function hookConnection() {
                 }
                 return originalSend.apply(this, arguments);
             };
+
+            const originalClose = core.connection.close;
+            core.connection.close = function() {
+                logDiag("core.connection.close() invoked - user explicitly logged out or cancelled reconnect.");
+                explicitLogoutOccurred = true;
+                disableAutoPostingOnDisconnect();
+                return originalClose.apply(this, arguments);
+            };
             
             if (typeof core.connection.onEvent === 'function') {
-                core.connection.onEvent('closed', () => {
-                    logDiag("Connection closed event from client framework. Auto-disabling immediately.");
-                    disableAutoPostingOnDisconnect();
+                core.connection.onEvent('closed', (isReconnect) => {
+                    logDiag(`Connection closed event from client framework. isReconnect=${isReconnect}, explicitLogout=${explicitLogoutOccurred}`);
+                    if (!isReconnect || explicitLogoutOccurred) {
+                        logDiag("Explicit logout confirmed. Fully disabling auto-posting.");
+                        disableAutoPostingOnDisconnect();
+                    } else {
+                        logDiag("Temporary disconnect detected (auto-reconnect in progress). Pausing queue without disabling.");
+                        pauseQueueForDisconnect();
+                    }
+                });
+
+                core.connection.onEvent('connected', () => {
+                    logDiag("Client framework 'connected' event received.");
+                    if (isAutoPosting) {
+                        resumeQueueAfterReconnect();
+                    }
                 });
             }
             
             core.connection.__autoposterHooked = true;
-            logDiag("fchatCore connection.send successfully hooked.");
+            logDiag("fchatCore connection successfully hooked.");
         }
     } catch (e) {
-        logDiag("Error hooking connection.send: " + e.message);
+        logDiag("Error hooking connection: " + e.message);
     }
 }
+
+// Secondary safety: Detect user clicking "Log out" button or "Cancel" on reconnect dialog in UI
+document.addEventListener('click', (e) => {
+    try {
+        const btn = e.target.closest('a, button');
+        if (btn) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            const icon = btn.querySelector('.fa-sign-out-alt');
+            if (icon || text.includes('log out') || text.includes('logout')) {
+                logDiag("User clicked Log Out in UI.");
+                explicitLogoutOccurred = true;
+                setTimeout(() => {
+                    // Reset if the user cancelled the logout confirmation dialog
+                    if (isFchatConnected()) {
+                        explicitLogoutOccurred = false;
+                    }
+                }, 10000);
+            } else if (text === 'cancel' && btn.closest('.modal')) {
+                logDiag("User clicked Cancel on reconnect modal. Marking explicit logout.");
+                explicitLogoutOccurred = true;
+                disableAutoPostingOnDisconnect();
+            }
+        }
+    } catch (err) {
+        // Ignore DOM inspection errors
+    }
+}, true);
 
 // High-precision queue scheduling functions
 function scheduleTimer(delayMs) {
@@ -459,7 +560,7 @@ function scheduleNextQueueCheck() {
 
 // Core queue processor
 function processPostingQueue() {
-    if (!isAutoPosting || postingQueue.length === 0 || isCurrentlySending) {
+    if (!isAutoPosting || !isFchatConnected() || postingQueue.length === 0 || isCurrentlySending) {
         return;
     }
     
@@ -521,23 +622,24 @@ function handleSchedulerTick() {
         
         totalTicks++;
         const now = Date.now();
+        const connected = isFchatConnected();
+        
         if (now - lastHeartbeatTime >= 15000) {
             lastHeartbeatTime = now;
-            logDiag(`Scheduler heartbeat: active=true, tickCount=${totalTicks}, queueSize=${postingQueue.length}, connected=${isFchatConnected()}`);
+            const offlineDuration = disconnectStartTime ? Math.round((now - disconnectStartTime) / 1000) : 0;
+            logDiag(`Scheduler heartbeat: active=true, tickCount=${totalTicks}, queueSize=${postingQueue.length}, connected=${connected}, temporarilyDisconnected=${isTemporarilyDisconnected}${isTemporarilyDisconnected ? ` (offline ${offlineDuration}s)` : ''}`);
         }
         
-        // If F-Chat is disconnected for 5 continuous seconds, disable auto-posting
-        if (!isFchatConnected()) {
-            if (!disconnectStartTime) {
-                disconnectStartTime = now;
-            } else if (now - disconnectStartTime >= 5000) {
-                logDiag("Disconnected for 5 continuous seconds. Auto-disabling.");
-                disableAutoPostingOnDisconnect();
-                return;
+        // Short disconnect detection and auto-resume
+        if (!connected) {
+            if (!isTemporarilyDisconnected) {
+                logDiag("Scheduler detected F-Chat connection inactive. Pausing ad queue.");
+                pauseQueueForDisconnect();
             }
             return;
-        } else {
-            disconnectStartTime = 0;
+        } else if (isTemporarilyDisconnected) {
+            logDiag("Scheduler detected F-Chat connection restored! Resuming ad queue.");
+            resumeQueueAfterReconnect();
         }
         
         const core = getFchatCore();
@@ -580,24 +682,45 @@ function handleSchedulerTick() {
     }
 }
 
-let receivedFirstTick = false;
-let fallbackInterval = null;
+let lastTickTimestamp = Date.now();
 
-// Initialize scheduler. Prepares ticks relayed from the Web Worker running
-// in the isolated world (to bypass CSP and avoid console errors).
-function initScheduler() {
-    setTimeout(() => {
-        if (!receivedFirstTick && !fallbackInterval) {
-            console.warn("F-Chat AutoPoster: No tick received from isolated scheduler. Falling back to standard setInterval.");
-            fallbackInterval = setInterval(handleSchedulerTick, 100);
-        }
-    }, 2500);
-}
+// 1. High-frequency watchdog timer:
+// Guarantees that handleSchedulerTick continues to execute continuously,
+// even if the user switches tabs, minimizes the window, or if cross-frame postMessage is throttled by Chrome.
+setInterval(() => {
+    const now = Date.now();
+    // If no tick has been processed in the last 150ms (e.g. background tab throttling), tick immediately
+    if (now - lastTickTimestamp >= 150) {
+        lastTickTimestamp = now;
+        handleSchedulerTick();
+    }
+}, 150);
 
-initScheduler();
+// Window blur & visibility listeners to ensure the scheduler triggers when tabs/windows transition
+window.addEventListener('blur', () => {
+    if (isAutoPosting) {
+        handleSchedulerTick();
+        scheduleNextQueueCheck();
+    }
+});
+
+// 2. Tab visibility change listener:
+// When switching between browser tabs or minimizing/restoring window, immediately trigger tick and queue check
+document.addEventListener('visibilitychange', () => {
+    logDiag(`Document visibility state changed: ${document.visibilityState} (hidden=${document.hidden})`);
+    if (isAutoPosting) {
+        lastTickTimestamp = Date.now();
+        handleSchedulerTick();
+        scheduleNextQueueCheck();
+    }
+});
 
 // Send the advertisement text to a specific channel
 async function sendAdToChannel(channelId) {
+    if (!isFchatConnected()) {
+        logDiag(`Cannot send ad to #${channelId}: F-Chat is disconnected.`);
+        return;
+    }
     isCurrentlySending = true;
     const now = Date.now();
     lastQueuePostTime = now;
@@ -648,12 +771,19 @@ async function sendAdToChannel(channelId) {
 }
 
 // Periodically sync channel states (e.g. current countdowns) with the popup
+// and ensure a scheduler tick fires every second even in background tabs
 setInterval(() => {
     try {
         if (isFchatConnected()) {
             sendChannelsList();
         }
+        if (isAutoPosting) {
+            handleSchedulerTick();
+        }
     } catch (e) {
         console.error("F-Chat AutoPoster: Sync tick error:", e);
     }
 }, 1000);
+
+// Try initial hook on load
+hookConnection();

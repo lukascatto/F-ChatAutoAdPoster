@@ -64,6 +64,11 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 
 ## Changelog
 
+### v1.3.2
+* **Short Disconnect Detection & Auto-Resume**: The extension now distinguishes between temporary network drops and genuine logouts. If you experience a brief disconnect and F-Chat auto-reconnects, auto-posting pauses while disconnected and seamlessly resumes posting as soon as the connection is restored.
+* **Explicit Logout Protection**: Auto-posting now only fully shuts off when you intentionally log out (clicking "Log out" or "Cancel" on the reconnect dialog), ensuring you never come back from being AFK to find auto-posting permanently halted by a transient drop.
+* **Background & Minimized Tab Posting Fix**: Fixed an issue where Chromium throttled or suspended the scheduler when switching tabs or minimizing the browser window. Replaced hidden subframe styling with off-screen explicit geometry, upgraded the Dedicated Web Worker loop, and added a continuous self-healing watchdog to guarantee uninterrupted ad posting without requiring any audio stream.
+
 ### v1.3.1.1
 * **Fixed Multi-Channel Rate-Limit Collision Bug**: Fixed a race condition where sending a manual chat or private message while the extension was actively posting across a multi-channel queue caused a "You must wait one second between sending channel/private messages." error and dropped the message.
 * **Ad Queue Yielding & User Message Priority**: The ad queue now tracks pending user message dispatches and automatically yields, ensuring all queued ads wait at least 1.05s after any user message is transmitted before resuming. Consecutive user messages are also safely spaced to prevent self-collision.
@@ -74,7 +79,7 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 * **Post-Cooldown Safety Buffer**: After a channel's 10-minute cooldown timer reaches 0, the extension waits at least 1 full second before resending an ad to that channel, preventing server-side "Error: You may only post an ad to a channel every ten minutes."
 * **Removed Typing-Based Pauses**: Ads no longer pause while actively typing or focusing inside message boxes.
 * **Symmetric Rate-Limit Protection**: Enforces 1.05s spacing symmetrically between ads and manual user messages (`MSG`, `PRI`, `RLL`) in both directions to prevent "wait one second" rate-limit collisions.
-* **Instant Logout Deactivation**: Auto-posting immediately deactivates upon logging out or WebSocket closure.
+* **Instant Logout Deactivation**: Auto-posting immediately deactivates upon logging out.
 
 ### v1.3.0
 * **New Extension Logo**: Updated the official extension logo/icon to the new high-resolution design (`extensionlogo.png`).
@@ -93,7 +98,7 @@ A modern, lightweight, and background-throttling-proof browser extension designe
 
 ### v1.1.0
 * **Typing Collision Prevention**: Automatically pauses automated ads while you are actively typing.
-* **Automatic Logout Protection**: Automatically deactivates auto-posting if you are disconnected or log out for more than 5 seconds.
+* **Automatic Logout Protection**: Automatically deactivates auto-posting when you log out.
 
 ---
 
